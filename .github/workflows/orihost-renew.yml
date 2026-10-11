@@ -53,7 +53,9 @@ jobs:
           ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
           NODE_LINK: ${{ secrets.NODE_LINK }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
-        run: python orihost_renew.py
+        run: |
+          set -o pipefail
+          python orihost_renew.py 2>&1 | tee raw.log
 
       - name: 回写 ORIHOST_COOKIE
         if: always()
@@ -74,6 +76,18 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit --allow-empty -m "chore: keepalive" && git push || true
           fi
+
+      - name: 日志推到 run-logs 分支（方便远程排查）
+        if: always()
+        run: |
+          [ -f raw.log ] || exit 0
+          grep -v '::add-mask::' raw.log > run.log || true
+          rm -f raw.log
+          mkdir -p /tmp/rl && cp run.log /tmp/rl/ && cp fail_*.png /tmp/rl/ 2>/dev/null || true
+          echo "run ${GITHUB_RUN_ID} $(date -u +%FT%TZ)" > /tmp/rl/RUN.txt
+          cd /tmp/rl && git init -q -b run-logs && git add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "logs ${GITHUB_RUN_ID}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" run-logs || true
 
       - name: 失败截图
         if: failure()
