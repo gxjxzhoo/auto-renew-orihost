@@ -76,22 +76,48 @@ def btn_enabled(sb, xpath):
         return False
 
 
-def pass_turnstile(sb, wait_btn_xpath, timeout=90):
-    """系统级鼠标点 Turnstile，直到目标按钮可点或拿到 token。"""
+RESET_TS_JS = """
+try { if (window.turnstile) { document.querySelectorAll('.cf-turnstile, [data-sitekey]').forEach(function(w){ try{turnstile.reset(w);}catch(e){} }); try{turnstile.reset();}catch(e){} return 1; } } catch(e) {}
+return 0;
+"""
+
+
+def rerender_detached(sb, secs=8):
+    """弹窗里的 Turnstile 是在 webdriver 连接状态下渲染的, CF 会识别。
+    重置 widget 后立刻断开 webdriver, 让它在"干净"状态下重新渲染。"""
+    try:
+        n = sb.execute_script(RESET_TS_JS)
+    except Exception:
+        n = 0
+    try:
+        sb.reconnect(secs)
+    except Exception:
+        sb.sleep(secs)
+    return n
+
+
+def pass_turnstile(sb, wait_btn_xpath, timeout=90, detach=False):
+    """系统级鼠标点 Turnstile，直到目标按钮可点或拿到 token。
+    detach=True: 用于页面内动态弹出的 Turnstile, 先断开 webdriver 重新渲染再点。"""
     end = time.time() + 20
     while time.time() < end and not sb.is_element_present(TS_IFRAME):
         sb.sleep(1)
-    sb.sleep(3)
+    if detach:
+        rerender_detached(sb)
+    else:
+        sb.sleep(3)
     start, clicks = time.time(), 0
     while time.time() - start < timeout:
         if btn_enabled(sb, wait_btn_xpath) or ts_token(sb):
             log(f"Turnstile 已通过（点击 {clicks} 次）")
             return True
         if clicks < 4 and (clicks == 0 or time.time() - start > clicks * 20):
+            if detach and clicks > 0:
+                rerender_detached(sb)
             try:
                 sb.uc_gui_click_captcha()
             except Exception as e:
-                log("uc_gui_click_captcha 异常：", e)
+                log("uc_gui_click_captcha 异常：", str(e).splitlines()[0][:200])
             clicks += 1
         sb.sleep(2)
     return False
@@ -294,7 +320,7 @@ def renew(sb, url):
             log(f"{sid}: 第 {i + 1} 次阅读后没出现 Claim Renewal，重试")
         sb.wait_for_element(X_CLAIM, by="xpath", timeout=10)
 
-        if not pass_turnstile(sb, X_CLAIM):
+        if not pass_turnstile(sb, X_CLAIM, detach=True):
             raise RuntimeError("续期弹窗 Turnstile 未通过")
         safe_click(sb, X_CLAIM)
         sb.sleep(5)
@@ -339,7 +365,7 @@ def main():
         urls = server_urls(sb)
         log(f"找到 {len(urls)} 台服务器")
         for u in urls:
-            for attempt in range(1, 3):
+            for attempt in range(1, 3):  # 每台最多 2 次
                 try:
                     if renew(sb, u):
                         ok += 1
