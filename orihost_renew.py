@@ -176,6 +176,54 @@ def login(sb):
 
 # ---------------------------------------------------------------- 续期
 
+KILL_OVERLAY_JS = """
+var n=0;
+document.querySelectorAll('iframe,div,ins').forEach(function(e){
+  var src=(e.src||'')+'';
+  if(src.indexOf('challenges.cloudflare.com')>=0) return;
+  if(e.querySelector && e.querySelector('iframe[src*="challenges.cloudflare.com"]')) return;
+  var st=getComputedStyle(e);
+  if(st.position==='fixed' && parseInt(st.zIndex||'0')>=2147483000){e.remove();n++;}
+});
+return n;
+"""
+
+
+def kill_overlays(sb):
+    """移除广告插页（全屏 fixed、z-index 最大的 iframe/div），保留 Turnstile。"""
+    try:
+        n = sb.execute_script(KILL_OVERLAY_JS) or 0
+        if n:
+            log(f"已移除 {n} 个广告遮罩")
+        return n
+    except Exception:
+        return 0
+
+
+def close_extra_tabs(sb, main):
+    for h in list(sb.driver.window_handles):
+        if h != main:
+            try:
+                sb.driver.switch_to.window(h)
+                sb.driver.close()
+            except Exception:
+                pass
+    sb.driver.switch_to.window(main)
+
+
+def safe_click(sb, xpath, timeout=20):
+    sb.wait_for_element(xpath, by="xpath", timeout=timeout)
+    kill_overlays(sb)
+    try:
+        sb.click(xpath, by="xpath", timeout=5)
+    except Exception as e:
+        if "intercepted" not in str(e) and "not clickable" not in str(e):
+            raise
+        kill_overlays(sb)
+        sb.js_click(xpath, by="xpath")
+
+
+
 def server_urls(sb):
     sb.uc_open_with_reconnect(BASE + "/", 3)
     try:
@@ -207,15 +255,9 @@ def open_server(sb, url):
     return renewal_days(sb)
 
 
-def renew(sb, url):
-    sid = url.rsplit("/", 1)[-1]
-    before = open_server(sb, url)
-    sb.click(X_RENEW, by="xpath", timeout=20)
-    sb.sleep(2)
-
-    main = sb.driver.current_window_handle
+def read_article(sb, sid, main):
     old = set(sb.driver.window_handles)
-    sb.click(X_READ, by="xpath", timeout=20)
+    safe_click(sb, X_READ)
     end = time.time() + 15
     while time.time() < end and len(sb.driver.window_handles) == len(old):
         sb.sleep(1)
@@ -223,25 +265,51 @@ def renew(sb, url):
     if new:
         sb.driver.switch_to.window(new[0])
         sb.sleep(READ_SECONDS)
-        sb.driver.close()
-        sb.driver.switch_to.window(main)
     else:
         log(f"{sid}: 没有弹出文章标签，直接等待 {READ_SECONDS}s")
         sb.sleep(READ_SECONDS)
+    close_extra_tabs(sb, main)  # 文章页和广告弹窗一起关掉
     sb.sleep(2)
+    kill_overlays(sb)
 
-    sb.wait_for_element(X_CLAIM, by="xpath", timeout=20)
-    if not pass_turnstile(sb, X_CLAIM):
-        sb.save_screenshot(f"fail_{sid}.png")
-        raise RuntimeError("续期弹窗 Turnstile 未通过")
-    sb.click(X_CLAIM, by="xpath")
-    sb.sleep(5)
-    after = open_server(sb, url)
-    log(f"{sid}: {before} 天 -> {after} 天")
-    if before is not None and after is not None and after > before:
-        return True
-    sb.save_screenshot(f"fail_{sid}.png")
-    return False
+
+def renew(sb, url):
+    sid = url.rsplit("/", 1)[-1]
+    try:
+        before = open_server(sb, url)
+        sb.sleep(2)
+        kill_overlays(sb)
+        main = sb.driver.current_window_handle
+        safe_click(sb, X_RENEW)
+        sb.sleep(2)
+        close_extra_tabs(sb, main)
+
+        for i in range(3):  # 广告可能吃掉 Read Article 的点击, 最多点 3 次
+            read_article(sb, sid, main)
+            if sb.is_element_present(X_CLAIM, by="xpath"):
+                break
+            sb.sleep(5)
+            if sb.is_element_present(X_CLAIM, by="xpath"):
+                break
+            log(f"{sid}: 第 {i + 1} 次阅读后没出现 Claim Renewal，重试")
+        sb.wait_for_element(X_CLAIM, by="xpath", timeout=10)
+
+        if not pass_turnstile(sb, X_CLAIM):
+            raise RuntimeError("续期弹窗 Turnstile 未通过")
+        safe_click(sb, X_CLAIM)
+        sb.sleep(5)
+        close_extra_tabs(sb, main)
+        after = open_server(sb, url)
+        log(f"{sid}: {before} 天 -> {after} 天")
+        if before is not None and after is not None and after > before:
+            return True
+        raise RuntimeError("剩余天数没有增加")
+    except Exception:
+        try:
+            sb.save_screenshot(f"fail_{sid}.png")
+        except Exception:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------- main
@@ -251,7 +319,7 @@ def main():
 
     proxy_url, ip, mode = setup_network()
     log(f"网络模式：{mode}，出口 IP：{ip}")
-    kw = dict(uc=True, test=True, headless=False, locale_code="en",
+    kw = dict(uc=True, test=True, headless=False, locale_code="en", ad_block=True,
               xvfb=sys.platform.startswith("linux"))
     if proxy_url:
         kw["proxy"] = proxy_url.split("://", 1)[-1]  # SB 要 host:port
@@ -277,7 +345,7 @@ def main():
                         ok += 1
                         break
                 except Exception as e:
-                    log(f"{u} 第 {attempt} 次续期失败：{e}")
+                    log(f"{u} 第 {attempt} 次续期失败：{str(e).splitlines()[0][:300]}")
         save_cookies(sb)
 
     log(f"完成：{ok}/{len(urls)} 台成功续期")
