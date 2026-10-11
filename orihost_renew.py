@@ -82,6 +82,23 @@ def add_cookies(ctx):
     log(f"已注入 {len(jar)} 个 cookie")
 
 
+def save_cookies(ctx):
+    """把当前登录态导出成 Cookie 请求头格式, 写入文件, 供工作流回写到 ORIHOST_COOKIE."""
+    out = os.getenv("COOKIE_OUT", "cookie.txt")
+    jar = [c for c in ctx.cookies() if "orihost.com" in c.get("domain", "")]
+    if not jar:
+        return
+    header = "; ".join(f"{c['name']}={c['value']}" for c in jar)
+    if os.getenv("GITHUB_ACTIONS"):
+        for c in jar:   # 日志脱敏
+            if len(c["value"]) > 6:
+                print(f"::add-mask::{c['value']}")
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(header)
+    log(f"已导出 {len(jar)} 个 cookie 到 {out}" + ("" if header != COOKIE else " (未变化)"))
+
+
 def ensure_login(page):
     page.goto(BASE, wait_until="domcontentloaded")
     settle(page)
@@ -178,6 +195,7 @@ def main():
         except Exception as e:
             page.screenshot(path="fail_login.png", full_page=True)
             raise
+        save_cookies(ctx)   # 登录成功立刻导出, 续期失败也不影响 cookie 更新
         urls = server_urls(page)
         log(f"找到 {len(urls)} 台服务器")
         ok = 0
@@ -188,6 +206,7 @@ def main():
                 log(f"{u}: 续期失败 {e}")
                 page.screenshot(path=f"fail_{u.rsplit('/',1)[-1]}.png")
         log(f"完成: {ok}/{len(urls)} 台成功续期")
+        save_cookies(ctx)
         ctx.close()
         sys.exit(0 if ok or not urls else 1)
 
