@@ -43,8 +43,8 @@ jobs:
       - name: 安装依赖
         run: |
           pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
-          sudo apt-get install -y xvfb
+          sudo apt-get update -y
+          sudo apt-get install -y xvfb   # SeleniumBase xvfb=True + uc_gui_click_captcha 需要
 
       - name: 续期
         env:
@@ -53,8 +53,7 @@ jobs:
           ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
           NODE_LINK: ${{ secrets.NODE_LINK }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
-          HEADLESS: "0"
-        run: xvfb-run -a python orihost_renew.py
+        run: python orihost_renew.py
 
       - name: 回写 ORIHOST_COOKIE
         if: always()
