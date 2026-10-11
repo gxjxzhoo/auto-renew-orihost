@@ -21,6 +21,7 @@ BASE = "https://panel.orihost.com"
 PROFILE = os.getenv("ORIHOST_PROFILE", "./orihost_profile")
 EMAIL = os.getenv("ORIHOST_EMAIL", "")
 PASSWORD = os.getenv("ORIHOST_PASSWORD", "")
+COOKIE = os.getenv("ORIHOST_COOKIE", "").strip()   # 浏览器里复制的整段 Cookie 请求头, 优先使用
 HEADLESS = os.getenv("HEADLESS", "0") == "1"
 READ_SECONDS = int(os.getenv("READ_SECONDS", "15"))
 NODE_LINK = os.getenv("NODE_LINK", "")
@@ -58,8 +59,23 @@ def setup_network():
     return None, probe_exit_ip() or "未知", "直连"
 
 
+def add_cookies(ctx):
+    if not COOKIE:
+        return
+    jar = []
+    for part in COOKIE.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            jar.append({"name": k, "value": v, "domain": "panel.orihost.com",
+                        "path": "/", "secure": True})
+    ctx.add_cookies(jar)
+    log(f"已注入 {len(jar)} 个 cookie")
+
+
 def ensure_login(page):
     page.goto(BASE, wait_until="networkidle")
+    if COOKIE and "/auth" in page.url:
+        log("Cookie 已失效, 改用账号密码登录")
     if "/auth" not in page.url:
         log("已是登录状态")
         return
@@ -138,6 +154,7 @@ def main():
         if proxy_url:
             kw["proxy"] = {"server": proxy_url}   # 本地无认证 mixed 端口
         ctx = p.chromium.launch_persistent_context(PROFILE, **kw)
+        add_cookies(ctx)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ensure_login(page)
         urls = server_urls(page)
