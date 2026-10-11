@@ -19,6 +19,6 @@ Orihost 免费服务器自动续期（Renew → Read Article → Turnstile → C
 
 ## 本地运行
 ```bash
-pip install -r requirements.txt && playwright install chromium
+pip install -r requirements.txt
 ORIHOST_EMAIL=xxx ORIHOST_PASSWORD=xxx python orihost_renew.py
 ```
