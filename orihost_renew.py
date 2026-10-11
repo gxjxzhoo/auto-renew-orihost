@@ -59,6 +59,16 @@ def setup_network():
     return None, probe_exit_ip() or "未知", "直连"
 
 
+def settle(page, selector=None, timeout=30000):
+    """SPA 有长连接, networkidle 永远等不到; 改为等元素出现或固定等几秒."""
+    if selector:
+        try:
+            page.wait_for_selector(selector, timeout=timeout)
+        except PWTimeout:
+            log(f"等待 {selector} 超时, 继续")
+    page.wait_for_timeout(2500)
+
+
 def add_cookies(ctx):
     if not COOKIE:
         return
@@ -73,7 +83,8 @@ def add_cookies(ctx):
 
 
 def ensure_login(page):
-    page.goto(BASE, wait_until="networkidle")
+    page.goto(BASE, wait_until="domcontentloaded")
+    settle(page)
     if COOKIE and "/auth" in page.url:
         log("Cookie 已失效, 改用账号密码登录")
     if "/auth" not in page.url:
@@ -81,7 +92,8 @@ def ensure_login(page):
         return
     if not (EMAIL and PASSWORD):
         sys.exit("未登录且没有设置 ORIHOST_EMAIL / ORIHOST_PASSWORD")
-    page.goto(f"{BASE}/auth/login", wait_until="networkidle")
+    page.goto(f"{BASE}/auth/login", wait_until="domcontentloaded")
+    settle(page, "input[type=password]")
     got_it = page.get_by_role("button", name=re.compile("got it", re.I))
     if got_it.count():
         got_it.first.click()
@@ -95,7 +107,8 @@ def ensure_login(page):
 
 
 def server_urls(page):
-    page.goto(BASE, wait_until="networkidle")
+    page.goto(BASE, wait_until="domcontentloaded")
+    settle(page, "a[href*='/server/']")
     urls = set()
     for a in page.locator("a[href*='/server/']").all():
         h = a.get_attribute("href") or ""
@@ -111,7 +124,8 @@ def renewal_days(page):
 
 
 def renew(page, ctx, url):
-    page.goto(url, wait_until="networkidle")
+    page.goto(url, wait_until="domcontentloaded")
+    settle(page, "text=/renewal in/i")
     before = renewal_days(page)
     page.get_by_role("button", name=re.compile(r"^\s*renew\s*$", re.I)).first.click()
     page.wait_for_timeout(1500)
@@ -139,7 +153,8 @@ def renew(page, ctx, url):
         solve_turnstile(page, timeout=6)
     claim.click()
     page.wait_for_timeout(4000)
-    page.reload(wait_until="networkidle")
+    page.reload(wait_until="domcontentloaded")
+    settle(page, "text=/renewal in/i")
     after = renewal_days(page)
     log(f"{url}: {before} 天 -> {after} 天")
     return after is not None and before is not None and after > before
@@ -156,7 +171,13 @@ def main():
         ctx = p.chromium.launch_persistent_context(PROFILE, **kw)
         add_cookies(ctx)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        ensure_login(page)
+        page.set_default_timeout(60000)
+        page.set_default_navigation_timeout(90000)
+        try:
+            ensure_login(page)
+        except Exception as e:
+            page.screenshot(path="fail_login.png", full_page=True)
+            raise
         urls = server_urls(page)
         log(f"找到 {len(urls)} 台服务器")
         ok = 0
