@@ -1,0 +1,74 @@
+name: Orihost 自动续期
+
+on:
+  schedule:
+    - cron: "0 1 */3 * *"   # 每 3 天 UTC 01:00 = 北京时间 09:00
+  workflow_dispatch:
+
+env:
+  SING_BOX_VERSION: "1.14.1"
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write   # 保活空提交用
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 缓存 sing-box
+        id: sb-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/sing-box-bin
+          key: sing-box-${{ env.SING_BOX_VERSION }}
+
+      - name: 下载 sing-box
+        if: steps.sb-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/sing-box-bin
+          curl -fsSL --retry 3 -o /tmp/sb.tgz \
+            "https://github.com/SagerNet/sing-box/releases/download/v${SING_BOX_VERSION}/sing-box-${SING_BOX_VERSION}-linux-amd64.tar.gz"
+          tar -xzf /tmp/sb.tgz -C /tmp
+          mv /tmp/sing-box-${SING_BOX_VERSION}-linux-amd64/sing-box ~/sing-box-bin/sing-box
+          chmod +x ~/sing-box-bin/sing-box
+        continue-on-error: true
+
+      - name: 安装依赖
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
+
+      - name: 续期
+        env:
+          ORIHOST_EMAIL: ${{ secrets.ORIHOST_EMAIL }}
+          ORIHOST_PASSWORD: ${{ secrets.ORIHOST_PASSWORD }}
+          NODE_LINK: ${{ secrets.NODE_LINK }}
+          SING_BOX_BIN: ~/sing-box-bin/sing-box
+          HEADLESS: "0"
+        run: xvfb-run -a python orihost_renew.py
+
+      - name: 保活（超过 45 天无提交补空提交）
+        if: always()
+        run: |
+          last=$(git log -1 --format=%ct); now=$(date +%s)
+          if [ $(( (now - last) / 86400 )) -ge 45 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -m "chore: keepalive" && git push || true
+          fi
+
+      - name: 失败截图
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renew-fail
+          path: fail_*.png
+          if-no-files-found: ignore
