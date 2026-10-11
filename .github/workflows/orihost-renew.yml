@@ -50,6 +50,7 @@ jobs:
         env:
           ORIHOST_EMAIL: ${{ secrets.ORIHOST_EMAIL }}
           ORIHOST_PASSWORD: ${{ secrets.ORIHOST_PASSWORD }}
+          ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
           NODE_LINK: ${{ secrets.NODE_LINK }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
           HEADLESS: "0"
