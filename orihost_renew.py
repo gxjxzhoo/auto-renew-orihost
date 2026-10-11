@@ -1,214 +1,287 @@
 #!/usr/bin/env python3
 """
-Orihost 免费服务器自动续期
-流程: 登录 -> 每台服务器 Console 页 -> Renew -> Read Article(新标签停留) -> 过 Turnstile -> Claim Renewal
+Orihost 免费服务器自动续期（SeleniumBase UC 模式 + uc_gui_click_captcha，同 hohai-checkin 的过盾方式）
 
-安装:  pip install playwright && playwright install chromium
-运行:  ORIHOST_EMAIL=xxx ORIHOST_PASSWORD=xxx python orihost_renew.py
-代理:  可选 NODE_LINK=vless://... (支持 vless/vmess/trojan/ss/socks5/http)
-       由 node_proxy.py(同 hohai-checkin) 用 sing-box 转成本地 127.0.0.1 代理给浏览器;
-       代理起不来时自动回落直连
-Linux 服务器无桌面: sudo apt install xvfb && xvfb-run -a python orihost_renew.py
-定时:  0 9 */3 * * cd /path && xvfb-run -a python orihost_renew.py >> renew.log 2>&1
-注意: Cloudflare Turnstile 对无头模式拦截很严, 所以这里用有头模式(HEADLESS=0).
+流程: 登录(优先 cookie, 失效用账号密码) -> 每台服务器 Console 页 -> Renew -> Read Article(新标签停留)
+      -> 过 Turnstile -> Claim Renewal -> 对比剩余天数 -> 导出最新 cookie
+
+环境变量:
+  ORIHOST_COOKIE    可选, 整段 Cookie 请求头, 优先使用
+  ORIHOST_EMAIL     账号(邮箱/用户名)
+  ORIHOST_PASSWORD  密码
+  NODE_LINK         可选, 代理节点(vless/vmess/trojan/ss/socks5/http), node_proxy.py 转本地代理, 失败回落直连
+  READ_SECONDS      看文章停留秒数, 默认 15
+  COOKIE_OUT        导出 cookie 文件, 默认 cookie.txt
+
+本地: pip install -r requirements.txt && python orihost_renew.py
+Linux 无桌面: SeleniumBase 会自动用 xvfb (需 apt install xvfb)
 """
-import os, re, sys
+import os
+import re
+import sys
+import time
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
 from node_proxy import setup_node_proxy, probe_exit_ip
 
 BASE = "https://panel.orihost.com"
-PROFILE = os.getenv("ORIHOST_PROFILE", "./orihost_profile")
 EMAIL = os.getenv("ORIHOST_EMAIL", "")
 PASSWORD = os.getenv("ORIHOST_PASSWORD", "")
-COOKIE = os.getenv("ORIHOST_COOKIE", "").strip()   # 浏览器里复制的整段 Cookie 请求头, 优先使用
-HEADLESS = os.getenv("HEADLESS", "0") == "1"
-READ_SECONDS = int(os.getenv("READ_SECONDS", "15"))
+COOKIE = os.getenv("ORIHOST_COOKIE", "").strip()
 NODE_LINK = os.getenv("NODE_LINK", "")
+READ_SECONDS = int(os.getenv("READ_SECONDS", "15"))
+COOKIE_OUT = os.getenv("COOKIE_OUT", "cookie.txt")
+
+TS_IFRAME = 'iframe[src*="challenges.cloudflare.com"]'
+X_RENEW = "//button[normalize-space()='Renew']"
+X_READ = "//button[contains(normalize-space(),'Read Article')]"
+X_CLAIM = "//button[contains(normalize-space(),'Claim Renewal')]"
+X_SIGNIN = "//button[@type='submit' or contains(normalize-space(),'Sign In')]"
 
 
-def log(m):
-    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {m}", flush=True)
+def log(*a):
+    print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}]", *a, flush=True)
 
 
-def solve_turnstile(page, timeout=30):
-    """点击 Cloudflare Turnstile 复选框, 等待通过."""
-    for _ in range(timeout // 3):
-        frame = page.frame_locator("iframe[src*='challenges.cloudflare.com']").first
-        try:
-            frame.locator("input[type=checkbox], label, body").first.click(timeout=3000)
-        except Exception:
-            pass
-        page.wait_for_timeout(3000)
-        # 通过后会写入隐藏字段 cf-turnstile-response
-        tok = page.locator("input[name='cf-turnstile-response']")
-        if tok.count() and (tok.first.input_value() or "").strip():
-            return True
-    return False
-
+# ---------------------------------------------------------------- 网络
 
 def setup_network():
-    """返回 (本地代理URL或None, 脱敏出口IP, 模式). 代理失败回落直连."""
+    """返回 (本地代理URL或None, 脱敏出口IP, 模式)。代理失败回落直连。"""
     if NODE_LINK.strip():
         try:
             proxy, ip, _ = setup_node_proxy(NODE_LINK, workdir=os.getenv("RUNNER_TEMP", "/tmp"))
             return proxy, ip or "未知", "代理"
         except Exception as e:
-            log(f"代理启动失败, 回落直连: {e}")
+            log("代理启动失败，回落直连：", e)
             return None, probe_exit_ip() or "未知", "直连(代理失败)"
     return None, probe_exit_ip() or "未知", "直连"
 
 
-def settle(page, selector=None, timeout=30000):
-    """SPA 有长连接, networkidle 永远等不到; 改为等元素出现或固定等几秒."""
-    if selector:
-        try:
-            page.wait_for_selector(selector, timeout=timeout)
-        except PWTimeout:
-            log(f"等待 {selector} 超时, 继续")
-    page.wait_for_timeout(2500)
+# ---------------------------------------------------------------- Turnstile
+
+def ts_token(sb):
+    try:
+        return sb.execute_script(
+            "var e=document.querySelector('input[name=\"cf-turnstile-response\"]');"
+            "return e?e.value:'';") or ""
+    except Exception:
+        return ""
 
 
-def add_cookies(ctx):
+def btn_enabled(sb, xpath):
+    try:
+        el = sb.find_element(xpath, by="xpath", timeout=1)
+        return el.is_enabled() and el.get_attribute("disabled") is None
+    except Exception:
+        return False
+
+
+def pass_turnstile(sb, wait_btn_xpath, timeout=90):
+    """系统级鼠标点 Turnstile，直到目标按钮可点或拿到 token。"""
+    end = time.time() + 20
+    while time.time() < end and not sb.is_element_present(TS_IFRAME):
+        sb.sleep(1)
+    sb.sleep(3)
+    start, clicks = time.time(), 0
+    while time.time() - start < timeout:
+        if btn_enabled(sb, wait_btn_xpath) or ts_token(sb):
+            log(f"Turnstile 已通过（点击 {clicks} 次）")
+            return True
+        if clicks < 4 and (clicks == 0 or time.time() - start > clicks * 20):
+            try:
+                sb.uc_gui_click_captcha()
+            except Exception as e:
+                log("uc_gui_click_captcha 异常：", e)
+            clicks += 1
+        sb.sleep(2)
+    return False
+
+
+# ---------------------------------------------------------------- 登录 / cookie
+
+def logged_in(sb):
+    return "/auth" not in sb.get_current_url()
+
+
+def inject_cookie(sb):
     if not COOKIE:
         return
-    jar = []
+    n = 0
     for part in COOKIE.split(";"):
         if "=" in part:
             k, v = part.strip().split("=", 1)
-            jar.append({"name": k, "value": v, "domain": "panel.orihost.com",
-                        "path": "/", "secure": True})
-    ctx.add_cookies(jar)
-    log(f"已注入 {len(jar)} 个 cookie")
+            try:
+                sb.driver.add_cookie({"name": k, "value": v, "domain": "panel.orihost.com",
+                                      "path": "/", "secure": True})
+                n += 1
+            except Exception as e:
+                log(f"cookie {k} 注入失败：{e}")
+    log(f"已注入 {n} 个 cookie")
 
 
-def save_cookies(ctx):
-    """把当前登录态导出成 Cookie 请求头格式, 写入文件, 供工作流回写到 ORIHOST_COOKIE."""
-    out = os.getenv("COOKIE_OUT", "cookie.txt")
-    jar = [c for c in ctx.cookies() if "orihost.com" in c.get("domain", "")]
+def save_cookies(sb):
+    jar = [c for c in sb.driver.get_cookies() if "orihost.com" in c.get("domain", "")]
     if not jar:
         return
     header = "; ".join(f"{c['name']}={c['value']}" for c in jar)
     if os.getenv("GITHUB_ACTIONS"):
-        for c in jar:   # 日志脱敏
+        for c in jar:
             if len(c["value"]) > 6:
-                print(f"::add-mask::{c['value']}")
-    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                print(f"::add-mask::{c['value']}", flush=True)
+    fd = os.open(COOKIE_OUT, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(header)
-    log(f"已导出 {len(jar)} 个 cookie 到 {out}" + ("" if header != COOKIE else " (未变化)"))
+    log(f"已导出 {len(jar)} 个 cookie" + (" (未变化)" if header == COOKIE else ""))
 
 
-def ensure_login(page):
-    page.goto(BASE, wait_until="domcontentloaded")
-    settle(page)
-    if COOKIE and "/auth" in page.url:
-        log("Cookie 已失效, 改用账号密码登录")
-    if "/auth" not in page.url:
+def login(sb):
+    sb.uc_open_with_reconnect(BASE + "/", 4)
+    sb.sleep(3)
+    if COOKIE:
+        inject_cookie(sb)
+        sb.uc_open_with_reconnect(BASE + "/", 3)
+        sb.sleep(4)
+        if logged_in(sb):
+            log("Cookie 登录成功")
+            return
+        log("Cookie 已失效，改用账号密码登录")
+    elif logged_in(sb):
         log("已是登录状态")
         return
+
     if not (EMAIL and PASSWORD):
-        sys.exit("未登录且没有设置 ORIHOST_EMAIL / ORIHOST_PASSWORD")
-    page.goto(f"{BASE}/auth/login", wait_until="domcontentloaded")
-    settle(page, "input[type=password]")
-    got_it = page.get_by_role("button", name=re.compile("got it", re.I))
-    if got_it.count():
-        got_it.first.click()
-    page.locator("input[type=email], input[name=email], input[name=user], input[name=username]").first.fill(EMAIL)
-    page.locator("input[type=password]").first.fill(PASSWORD)
-    if not solve_turnstile(page):
-        log("登录页 Turnstile 可能未通过, 仍尝试提交")
-    page.get_by_role("button", name=re.compile(r"sign in|login|log in", re.I)).first.click()
-    page.wait_for_url(lambda u: "/auth" not in u, timeout=30000)
-    log("登录成功")
+        raise RuntimeError("未登录且没有设置 ORIHOST_EMAIL / ORIHOST_PASSWORD")
+    sb.uc_open_with_reconnect(BASE + "/auth/login", 4)
+    sb.wait_for_element('input[type="password"]', timeout=40)
+    try:
+        sb.click("//button[normalize-space()='Got it']", by="xpath", timeout=2)
+    except Exception:
+        pass
+    user_sel = ('form input:not([type="password"]):not([type="hidden"])'
+                ':not([type="checkbox"]):not([type="submit"])')
+    sb.type(user_sel, EMAIL)
+    sb.type('input[type="password"]', PASSWORD)
+    if not pass_turnstile(sb, X_SIGNIN):
+        sb.save_screenshot("fail_login.png")
+        raise RuntimeError("登录页 Turnstile 未通过")
+    sb.click(X_SIGNIN, by="xpath")
+    end = time.time() + 40
+    while time.time() < end and not logged_in(sb):
+        sb.sleep(1)
+    if not logged_in(sb):
+        sb.save_screenshot("fail_login.png")
+        raise RuntimeError("账号密码登录失败（仍停在 /auth）")
+    log("账号密码登录成功")
 
 
-def server_urls(page):
-    page.goto(BASE, wait_until="domcontentloaded")
-    settle(page, "a[href*='/server/']")
+# ---------------------------------------------------------------- 续期
+
+def server_urls(sb):
+    sb.uc_open_with_reconnect(BASE + "/", 3)
+    try:
+        sb.wait_for_element("a[href*='/server/']", timeout=40)
+    except Exception:
+        log("首页没找到服务器链接")
     urls = set()
-    for a in page.locator("a[href*='/server/']").all():
-        h = a.get_attribute("href") or ""
-        m = re.search(r"/server/([0-9a-f]{8})", h)
+    for a in sb.find_elements("a[href*='/server/']"):
+        m = re.search(r"/server/([0-9a-zA-Z]{8})", a.get_attribute("href") or "")
         if m:
             urls.add(f"{BASE}/server/{m.group(1)}")
     return sorted(urls)
 
 
-def renewal_days(page):
-    m = re.search(r"renewal in\s*:?\s*(\d+)\s*day", page.inner_text("body"), re.I)
+def renewal_days(sb):
+    try:
+        txt = sb.get_text("body")
+    except Exception:
+        return None
+    m = re.search(r"renewal in\s*:?\s*(\d+)\s*day", txt, re.I)
     return int(m.group(1)) if m else None
 
 
-def renew(page, ctx, url):
-    page.goto(url, wait_until="domcontentloaded")
-    settle(page, "text=/renewal in/i")
-    before = renewal_days(page)
-    page.get_by_role("button", name=re.compile(r"^\s*renew\s*$", re.I)).first.click()
-    page.wait_for_timeout(1500)
+def open_server(sb, url):
+    sb.uc_open_with_reconnect(url, 3)
+    end = time.time() + 40
+    while time.time() < end and renewal_days(sb) is None:
+        sb.sleep(1)
+    return renewal_days(sb)
 
-    # Read Article: 打开新标签, 停留几秒
-    with ctx.expect_page() as newp:
-        page.get_by_role("button", name=re.compile("read article", re.I)).first.click()
-    article = newp.value
-    try:
-        article.wait_for_load_state("domcontentloaded", timeout=30000)
-    except PWTimeout:
-        pass
-    article.wait_for_timeout(READ_SECONDS * 1000)
-    article.close()
-    page.bring_to_front()
-    page.wait_for_timeout(2000)
 
-    # 过 Turnstile 后点 Claim Renewal
-    solve_turnstile(page)
-    claim = page.get_by_role("button", name=re.compile("claim renewal", re.I)).first
-    claim.wait_for(state="visible", timeout=15000)
-    for _ in range(10):
-        if claim.is_enabled():
-            break
-        solve_turnstile(page, timeout=6)
-    claim.click()
-    page.wait_for_timeout(4000)
-    page.reload(wait_until="domcontentloaded")
-    settle(page, "text=/renewal in/i")
-    after = renewal_days(page)
-    log(f"{url}: {before} 天 -> {after} 天")
-    return after is not None and before is not None and after > before
+def renew(sb, url):
+    sid = url.rsplit("/", 1)[-1]
+    before = open_server(sb, url)
+    sb.click(X_RENEW, by="xpath", timeout=20)
+    sb.sleep(2)
 
+    main = sb.driver.current_window_handle
+    old = set(sb.driver.window_handles)
+    sb.click(X_READ, by="xpath", timeout=20)
+    end = time.time() + 15
+    while time.time() < end and len(sb.driver.window_handles) == len(old):
+        sb.sleep(1)
+    new = [h for h in sb.driver.window_handles if h not in old]
+    if new:
+        sb.driver.switch_to.window(new[0])
+        sb.sleep(READ_SECONDS)
+        sb.driver.close()
+        sb.driver.switch_to.window(main)
+    else:
+        log(f"{sid}: 没有弹出文章标签，直接等待 {READ_SECONDS}s")
+        sb.sleep(READ_SECONDS)
+    sb.sleep(2)
+
+    sb.wait_for_element(X_CLAIM, by="xpath", timeout=20)
+    if not pass_turnstile(sb, X_CLAIM):
+        sb.save_screenshot(f"fail_{sid}.png")
+        raise RuntimeError("续期弹窗 Turnstile 未通过")
+    sb.click(X_CLAIM, by="xpath")
+    sb.sleep(5)
+    after = open_server(sb, url)
+    log(f"{sid}: {before} 天 -> {after} 天")
+    if before is not None and after is not None and after > before:
+        return True
+    sb.save_screenshot(f"fail_{sid}.png")
+    return False
+
+
+# ---------------------------------------------------------------- main
 
 def main():
+    from seleniumbase import SB
+
     proxy_url, ip, mode = setup_network()
-    log(f"网络模式: {mode}, 出口 IP: {ip}")
-    with sync_playwright() as p:
-        kw = dict(headless=HEADLESS, viewport={"width": 1366, "height": 900},
-                  args=["--disable-blink-features=AutomationControlled"])
-        if proxy_url:
-            kw["proxy"] = {"server": proxy_url}   # 本地无认证 mixed 端口
-        ctx = p.chromium.launch_persistent_context(PROFILE, **kw)
-        add_cookies(ctx)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.set_default_timeout(60000)
-        page.set_default_navigation_timeout(90000)
+    log(f"网络模式：{mode}，出口 IP：{ip}")
+    kw = dict(uc=True, test=True, headless=False, locale_code="en",
+              xvfb=sys.platform.startswith("linux"))
+    if proxy_url:
+        kw["proxy"] = proxy_url.split("://", 1)[-1]  # SB 要 host:port
+
+    ok, urls = 0, []
+    with SB(**kw) as sb:
         try:
-            ensure_login(page)
-        except Exception as e:
-            page.screenshot(path="fail_login.png", full_page=True)
-            raise
-        save_cookies(ctx)   # 登录成功立刻导出, 续期失败也不影响 cookie 更新
-        urls = server_urls(page)
-        log(f"找到 {len(urls)} 台服务器")
-        ok = 0
-        for u in urls:
+            login(sb)
+        except Exception:
             try:
-                ok += renew(page, ctx, u)
-            except Exception as e:
-                log(f"{u}: 续期失败 {e}")
-                page.screenshot(path=f"fail_{u.rsplit('/',1)[-1]}.png")
-        log(f"完成: {ok}/{len(urls)} 台成功续期")
-        save_cookies(ctx)
-        ctx.close()
-        sys.exit(0 if ok or not urls else 1)
+                sb.save_screenshot("fail_login.png")
+            except Exception:
+                pass
+            raise
+        save_cookies(sb)  # 登录成功立即导出，续期失败也不影响 cookie 更新
+
+        urls = server_urls(sb)
+        log(f"找到 {len(urls)} 台服务器")
+        for u in urls:
+            for attempt in range(1, 3):
+                try:
+                    if renew(sb, u):
+                        ok += 1
+                        break
+                except Exception as e:
+                    log(f"{u} 第 {attempt} 次续期失败：{e}")
+        save_cookies(sb)
+
+    log(f"完成：{ok}/{len(urls)} 台成功续期")
+    sys.exit(0 if ok or not urls else 1)
 
 
 if __name__ == "__main__":
