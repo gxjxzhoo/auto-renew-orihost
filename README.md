@@ -7,6 +7,7 @@ Orihost 免费服务器自动续期（Renew → Read Article → Turnstile → C
 
 | Secret | 说明 |
 | --- | --- |
+| `ORIHOST_COOKIE` | 可选，优先使用。电脑浏览器登录面板后 F12 → Network → 任一 panel.orihost.com 请求头里整段 Cookie；失效时自动回落账号密码 |
 | `ORIHOST_EMAIL` | 面板登录邮箱/用户名 |
 | `ORIHOST_PASSWORD` | 面板密码 |
 | `NODE_LINK` | 可选，代理节点链接（vless/vmess/trojan/ss/socks5/http），由 `node_proxy.py` 用 sing-box 转本地代理，失败回落直连 |
