@@ -56,6 +56,16 @@ jobs:
           HEADLESS: "0"
         run: xvfb-run -a python orihost_renew.py
 
+      - name: 回写 ORIHOST_COOKIE
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "未设置 GH_PAT，跳过 cookie 回写"; exit 0; fi
+          if [ ! -s cookie.txt ]; then echo "没有导出的 cookie，跳过"; exit 0; fi
+          gh secret set ORIHOST_COOKIE --repo "$GITHUB_REPOSITORY" < cookie.txt && echo "ORIHOST_COOKIE 已更新"
+          rm -f cookie.txt
+
       - name: 保活（超过 45 天无提交补空提交）
         if: always()
         run: |
