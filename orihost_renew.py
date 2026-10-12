@@ -33,6 +33,7 @@ READ_SECONDS = int(os.getenv("READ_SECONDS", "25"))
 COOKIE_OUT = os.getenv("COOKIE_OUT", "cookie.txt")
 
 TS_IFRAME = 'iframe[src*="challenges.cloudflare.com"]'
+MAX_DAYS = int(os.environ.get("MAX_DAYS", "21"))
 X_RENEW = "//button[normalize-space()='Renew']"
 X_READ = "//button[contains(normalize-space(),'Read Article')]"
 X_CLAIM = "//button[contains(normalize-space(),'Claim Renewal')]"
@@ -381,6 +382,13 @@ def renew(sb, url):
         sb.sleep(2)
         kill_overlays(sb)
         main = sb.driver.current_window_handle
+        # 面板续期上限约 21 天；已到上限时没有 Renew 按钮，视为无需续期
+        if not sb.is_element_visible(X_RENEW, by="xpath"):
+            sb.sleep(3)
+        if not sb.is_element_visible(X_RENEW, by="xpath") and before is not None and before >= MAX_DAYS:
+            log(f"{sid}: 剩余 {before} 天，已达上限，跳过")
+            st, up = server_info(sb)
+            return {"before": before, "after": before, "status": st, "uptime": up, "skipped": True}
         safe_click(sb, X_RENEW)
         sb.sleep(2)
         close_extra_tabs(sb, main)
@@ -417,7 +425,7 @@ def renew(sb, url):
         close_extra_tabs(sb, main)
         after = open_server(sb, url)
         log(f"{sid}: {before} 天 -> {after} 天")
-        if before is not None and after is not None and after > before:
+        if before is not None and after is not None and (after > before or after >= MAX_DAYS):
             st, up = server_info(sb)
             return {"before": before, "after": after, "status": st, "uptime": up}
         raise RuntimeError("剩余天数没有增加")
@@ -468,7 +476,9 @@ def build_report(mode, ip, results, login_error=None):
             lines.append(f"⚡ 状态：{r['status']}")
         if r.get("uptime"):
             lines.append(f"⏰ 运行时长：{esc(r['uptime'])}")
-        if r["ok"]:
+        if r.get("skipped"):
+            lines += ["✅ 已达续期上限，无需续期", f"📅 剩余：约 {r['before']} 天"]
+        elif r["ok"]:
             lines += ["🎉 续期成功",
                       f"📅 续期前：约 {r['before']} 天",
                       f"✅ 续期后：约 {r['after']} 天"]
