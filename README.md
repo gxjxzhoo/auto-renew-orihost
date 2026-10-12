@@ -12,6 +12,8 @@ Orihost 免费服务器自动续期（Renew → Read Article → Turnstile → C
 | `ORIHOST_EMAIL` | 面板登录邮箱/用户名 |
 | `ORIHOST_PASSWORD` | 面板密码 |
 | `NODE_LINK` | 可选，代理节点链接（vless/vmess/trojan/ss/socks5/http），由 `node_proxy.py` 用 sing-box 转本地代理，失败回落直连 |
+| `TG_BOT_TOKEN` | 可选，Telegram 机器人 token，设置后每次运行推送报告 |
+| `TG_CHAT_ID` | 可选，接收报告的 Telegram chat id |
 
 登录顺序：先用 `ORIHOST_COOKIE`，失效则用账号密码登录；登录成功后导出最新 cookie，配置了 `GH_PAT` 时自动写回 `ORIHOST_COOKIE`。
 
