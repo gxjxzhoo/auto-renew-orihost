@@ -102,10 +102,7 @@ def pass_turnstile(sb, wait_btn_xpath, timeout=90, detach=False):
     end = time.time() + 20
     while time.time() < end and not sb.is_element_present(TS_IFRAME):
         sb.sleep(1)
-    if detach:
-        rerender_detached(sb)
-    else:
-        sb.sleep(3)
+    sb.sleep(3)
     start, clicks = time.time(), 0
     while time.time() - start < timeout:
         if btn_enabled(sb, wait_btn_xpath) or ts_token(sb):
@@ -344,6 +341,15 @@ def renew(sb, url):
             sb.save_screenshot(f"fail_{sid}_read{i + 1}.png")
             close_extra_tabs(sb, main)
         sb.wait_for_element(X_CLAIM, by="xpath", timeout=10)
+        # 文章是独立弹窗, 在 xvfb 里会盖住面板窗口, 系统级点击会点到文章上 -> 先关掉
+        close_extra_tabs(sb, main)
+        back_to_main(sb, main)
+        sb.sleep(3)
+        kill_overlays(sb)
+        try:
+            sb.click("//button[normalize-space()='Got it']", by="xpath", timeout=2)
+        except Exception:
+            pass
 
         if not pass_turnstile(sb, X_CLAIM, detach=True):
             raise RuntimeError("续期弹窗 Turnstile 未通过")
