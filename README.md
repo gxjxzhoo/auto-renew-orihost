@@ -14,7 +14,7 @@ Orihost 免费服务器自动续期（Renew → Read Article → Turnstile → C
 | `NODE_LINK` | 可选，代理节点链接（vless/vmess/trojan/ss/socks5/http），由 `node_proxy.py` 用 sing-box 转本地代理，失败回落直连 |
 | `TG_BOT_TOKEN` | 可选，Telegram 机器人 token，设置后每次运行推送报告 |
 | `TG_CHAT_ID` | 可选，接收报告的 Telegram chat id |
-\n关机自动开机：每次运行用面板 client API（复用登录会话）查服务器状态，关机就发开机指令；不想要可在 workflow 里设 `AUTO_START: "0"`。
+\n关机自动开机：每次运行用面板 client API（复用登录会话）查服务器状态，关机就发开机指令；不想要可在 workflow 里设 `AUTO_START: "0"`；个别服务器不开机用 `AUTO_START_SKIP`（逗号分隔 ID）。
 
 登录顺序：先用 `ORIHOST_COOKIE`，失效则用账号密码登录；登录成功后导出最新 cookie，配置了 `GH_PAT` 时自动写回 `ORIHOST_COOKIE`。
 
