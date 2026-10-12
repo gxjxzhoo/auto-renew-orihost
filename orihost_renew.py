@@ -385,7 +385,8 @@ def renew(sb, url):
         # 面板续期上限约 21 天；已到上限时没有 Renew 按钮，视为无需续期
         if not sb.is_element_visible(X_RENEW, by="xpath"):
             sb.sleep(3)
-        if not sb.is_element_visible(X_RENEW, by="xpath") and before is not None and before >= MAX_DAYS:
+        limit = sb.is_element_present("//*[contains(normalize-space(),'Renew Limit Reached')]", by="xpath")
+        if limit or (not sb.is_element_visible(X_RENEW, by="xpath") and before is not None and before >= MAX_DAYS):
             log(f"{sid}: 剩余 {before} 天，已达上限，跳过")
             st, up = server_info(sb)
             return {"before": before, "after": before, "status": st, "uptime": up, "skipped": True}
