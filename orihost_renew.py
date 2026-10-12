@@ -96,6 +96,41 @@ def rerender_detached(sb, secs=8):
     return n
 
 
+MARK_TS_JS = """
+var inp=document.querySelector('input[name="cf-turnstile-response"]');
+var el=inp?inp.parentElement:null;
+while(el && el!==document.body && (el.offsetWidth<250 || el.offsetHeight<50)) el=el.parentElement;
+if(!el || el===document.body){
+  var f=document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+  el=f||null;
+}
+if(!el) return null;
+el.scrollIntoView({block:'center'});
+el.setAttribute('data-hark-ts','1');
+var r=el.getBoundingClientRect();
+return [r.left, r.top, r.width, r.height];
+"""
+
+
+def click_turnstile_box(sb):
+    """自己算复选框的屏幕坐标再用系统鼠标点（uc_gui_click_captcha 在 SPA 弹窗里会选错元素）。"""
+    rect = sb.execute_script(MARK_TS_JS)
+    if not rect:
+        log("没找到 Turnstile 容器，退回 uc_gui_click_captcha")
+        sb.uc_gui_click_captcha()
+        return
+    sb.sleep(1)
+    rect = sb.execute_script(
+        "var r=document.querySelector('[data-hark-ts]').getBoundingClientRect();"
+        "return [r.left,r.top,r.width,r.height];")
+    w = sb.driver.get_window_rect()
+    inner_h = sb.execute_script("return window.innerHeight;")
+    x = w["x"] + rect[0] + 30
+    y = w["y"] + w["height"] - inner_h + rect[1] + rect[3] / 2.0
+    log(f"Turnstile 容器 {[int(v) for v in rect]}，点击屏幕坐标 ({int(x)}, {int(y)})")
+    sb.uc_gui_click_x_y(x, y)
+
+
 def pass_turnstile(sb, wait_btn_xpath, timeout=90, detach=False):
     """系统级鼠标点 Turnstile，直到目标按钮可点或拿到 token。
     detach=True: 用于页面内动态弹出的 Turnstile, 先断开 webdriver 重新渲染再点。"""
@@ -109,13 +144,22 @@ def pass_turnstile(sb, wait_btn_xpath, timeout=90, detach=False):
             log(f"Turnstile 已通过（点击 {clicks} 次）")
             return True
         if clicks < 4 and (clicks == 0 or time.time() - start > clicks * 20):
-            if detach and clicks > 0:
+            if detach and clicks >= 2:
                 rerender_detached(sb)
             try:
-                sb.uc_gui_click_captcha()
+                if detach:
+                    click_turnstile_box(sb)
+                else:
+                    sb.uc_gui_click_captcha()
             except Exception as e:
                 log("uc_gui_click_captcha 异常：", str(e).splitlines()[0][:200])
             clicks += 1
+            if detach and clicks == 1:
+                sb.sleep(4)
+                try:
+                    sb.save_screenshot('fail_ts_after_click.png')
+                except Exception:
+                    pass
         sb.sleep(2)
     return False
 
