@@ -16,6 +16,7 @@ Orihost 免费服务器自动续期（SeleniumBase UC 模式 + uc_gui_click_capt
 本地: pip install -r requirements.txt && python orihost_renew.py
 Linux 无桌面: SeleniumBase 会自动用 xvfb (需 apt install xvfb)
 """
+import json
 import os
 import re
 import sys
@@ -315,19 +316,85 @@ def renewal_days(sb):
     return int(m.group(1)) if m else None
 
 
-def server_info(sb):
-    """从服务器页面读状态和运行时长（读不到就返回 None）。"""
+API_JS = r"""
+const [method, path, body, done] = [arguments[0], arguments[1], arguments[2], arguments[arguments.length - 1]];
+const m = document.cookie.match(/XSRF-TOKEN=([^;]+)/);
+const h = {"Accept": "application/json", "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"};
+if (m) h["X-XSRF-TOKEN"] = decodeURIComponent(m[1]);
+fetch(path, {method, headers: h, credentials: "same-origin", body: body ? JSON.stringify(body) : undefined})
+  .then(async r => done({status: r.status, text: await r.text()}))
+  .catch(e => done({status: 0, text: String(e)}));
+"""
+STATE_CN = {"running": "运行中", "offline": "已关机", "starting": "启动中", "stopping": "停止中"}
+AUTO_START = os.getenv("AUTO_START", "1").strip().lower() not in ("0", "false", "no", "")
+
+
+def panel_api(sb, method, path, body=None):
+    """用浏览器里已登录的会话调用面板 client API（同源 fetch，带 XSRF）。"""
+    sb.driver.set_script_timeout(20)
+    return sb.driver.execute_async_script(API_JS, method, path, body)
+
+
+def fmt_uptime(ms):
+    sec = int(ms or 0) // 1000
+    d, sec = divmod(sec, 86400)
+    h, sec = divmod(sec, 3600)
+    m = sec // 60
+    return f"{d}d {h}h {m}m" if d else f"{h}h {m}m"
+
+
+def api_state(sb, sid):
+    try:
+        r = panel_api(sb, "GET", f"/api/client/servers/{sid}/resources")
+        if r and r.get("status") == 200:
+            a = json.loads(r["text"])["attributes"]
+            up = a.get("resources", {}).get("uptime", 0)
+            return a.get("current_state"), (fmt_uptime(up) if up else None)
+        log(f"{sid}: 状态接口返回 {r.get('status') if r else None}")
+    except Exception as e:
+        log(f"{sid}: 状态接口异常 {type(e).__name__}")
+    return None, None
+
+
+def server_info(sb, sid=None):
+    """服务器状态和运行时长：优先 client API，失败再读页面。"""
+    if sid:
+        st, up = api_state(sb, sid)
+        if st:
+            return STATE_CN.get(st, st), up
     try:
         txt = sb.get_text("body")
     except Exception:
         return None, None
-    st = None
-    m = re.search(r"\b(Running|Offline|Starting|Stopping)\b", txt)
-    if m:
-        st = {"Running": "运行中", "Offline": "已关机", "Starting": "启动中",
-              "Stopping": "停止中"}[m.group(1)]
-    up = re.search(r"(\d+d\s*\d+h\s*\d+m|\d+h\s*\d+m\s*\d+s|\d+m\s*\d+s)", txt)
-    return st, (up.group(1) if up else None)
+    m = re.search(r"UPTIME\s*(\d+d\s*\d+h\s*\d+m|\d+h\s*\d+m(?:\s*\d+s)?|\d+m\s*\d+s|Offline)", txt, re.I)
+    if not m:
+        return None, None
+    if m.group(1).lower() == "offline":
+        return "已关机", None
+    return "运行中", m.group(1)
+
+
+def ensure_running(sb, sid, rec):
+    """关机就发开机信号，记录到报告。"""
+    st, _ = api_state(sb, sid)
+    if st != "offline" or not AUTO_START:
+        return
+    r = panel_api(sb, "POST", f"/api/client/servers/{sid}/power", {"signal": "start"})
+    if r and r.get("status") in (200, 204):
+        log(f"{sid}: 已关机，已发送开机指令")
+        for _ in range(12):
+            time.sleep(5)
+            st, up = api_state(sb, sid)
+            if st in ("running", "starting"):
+                break
+        rec["status"], rec["uptime"] = STATE_CN.get(st, st), up
+        rec["started"] = st in ("running", "starting")
+        if not rec["started"]:
+            rec["start_error"] = f"开机后状态仍为 {st}"
+    else:
+        rec["started"] = False
+        rec["start_error"] = f"开机接口返回 {r.get('status') if r else None}"
+        log(f"{sid}: {rec['start_error']}")
 
 
 def open_server(sb, url):
@@ -388,7 +455,7 @@ def renew(sb, url):
         limit = sb.is_element_present("//*[contains(normalize-space(),'Renew Limit Reached')]", by="xpath")
         if limit or (not sb.is_element_visible(X_RENEW, by="xpath") and before is not None and before >= MAX_DAYS):
             log(f"{sid}: 剩余 {before} 天，已达上限，跳过")
-            st, up = server_info(sb)
+            st, up = server_info(sb, sid)
             return {"before": before, "after": before, "status": st, "uptime": up, "skipped": True}
         safe_click(sb, X_RENEW)
         sb.sleep(2)
@@ -427,7 +494,7 @@ def renew(sb, url):
         after = open_server(sb, url)
         log(f"{sid}: {before} 天 -> {after} 天")
         if before is not None and after is not None and (after > before or after >= MAX_DAYS):
-            st, up = server_info(sb)
+            st, up = server_info(sb, sid)
             return {"before": before, "after": after, "status": st, "uptime": up}
         raise RuntimeError("剩余天数没有增加")
     except Exception:
@@ -477,6 +544,10 @@ def build_report(mode, ip, results, login_error=None):
             lines.append(f"⚡ 状态：{r['status']}")
         if r.get("uptime"):
             lines.append(f"⏰ 运行时长：{esc(r['uptime'])}")
+        if r.get("started"):
+            lines.append("🔌 检测到关机，已自动开机")
+        elif r.get("start_error"):
+            lines.append(f"🔌 自动开机失败：{esc(r['start_error'])}")
         if r.get("skipped"):
             lines += ["✅ 已达续期上限，无需续期", f"📅 剩余：约 {r['before']} 天"]
         elif r["ok"]:
@@ -558,9 +629,13 @@ def main():
                 if not rec["ok"]:
                     try:
                         rec["before"] = renewal_days(sb)
-                        rec["status"], rec["uptime"] = server_info(sb)
+                        rec["status"], rec["uptime"] = server_info(sb, sid)
                     except Exception:
                         pass
+                try:
+                    ensure_running(sb, sid, rec)
+                except Exception as e:
+                    log(f"{sid}: 自动开机异常 {type(e).__name__}")
                 results.append(rec)
             save_cookies(sb)
     except Exception as e:
