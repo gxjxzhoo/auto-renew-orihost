@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write   # 保活空提交用
+      actions: write    # 清理旧运行记录
     steps:
       - uses: actions/checkout@v4
 
@@ -99,3 +100,16 @@ jobs:
           name: renew-fail
           path: fail_*.png
           if-no-files-found: ignore
+
+      - name: 清理旧运行记录（保留最近 10 条）
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: 10
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | select(.status == "completed") | .id' \
+            | grep -v "^${GITHUB_RUN_ID}$" | tail -n +"$KEEP" \
+            | while read -r id; do
+                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" >/dev/null && echo "已删除运行 ${id}"
+              done || true
