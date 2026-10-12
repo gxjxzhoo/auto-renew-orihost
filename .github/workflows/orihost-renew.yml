@@ -54,6 +54,7 @@ jobs:
           NODE_LINK: ${{ secrets.NODE_LINK }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          AUTO_START_SKIP: "b82d0a04"   # 没有启动文件的服务器不自动开机，逗号分隔
           SING_BOX_BIN: ~/sing-box-bin/sing-box
         run: |
           set -o pipefail
