@@ -29,7 +29,7 @@ EMAIL = os.getenv("ORIHOST_EMAIL", "")
 PASSWORD = os.getenv("ORIHOST_PASSWORD", "")
 COOKIE = os.getenv("ORIHOST_COOKIE", "").strip()
 NODE_LINK = os.getenv("NODE_LINK", "")
-READ_SECONDS = int(os.getenv("READ_SECONDS", "15"))
+READ_SECONDS = int(os.getenv("READ_SECONDS", "25"))
 COOKIE_OUT = os.getenv("COOKIE_OUT", "cookie.txt")
 
 TS_IFRAME = 'iframe[src*="challenges.cloudflare.com"]'
@@ -281,7 +281,21 @@ def open_server(sb, url):
     return renewal_days(sb)
 
 
+def back_to_main(sb, main):
+    sb.driver.switch_to.window(main)
+    try:
+        sb.driver.execute_cdp_cmd("Page.bringToFront", {})
+    except Exception:
+        pass
+    try:
+        sb.execute_script("window.dispatchEvent(new Event('focus'));"
+                          "document.dispatchEvent(new Event('visibilitychange'));")
+    except Exception:
+        pass
+
+
 def read_article(sb, sid, main):
+    """点 Read Article -> 文章新标签停留 -> 回到面板（文章标签保持打开，页面要求 Keep it open）。"""
     old = set(sb.driver.window_handles)
     safe_click(sb, X_READ)
     end = time.time() + 15
@@ -289,13 +303,18 @@ def read_article(sb, sid, main):
         sb.sleep(1)
     new = [h for h in sb.driver.window_handles if h not in old]
     if new:
-        sb.driver.switch_to.window(new[0])
+        sb.driver.switch_to.window(new[-1])
+        sb.sleep(3)
+        try:
+            log(f"{sid}: 文章页 {sb.get_current_url()[:80]}")
+        except Exception:
+            pass
         sb.sleep(READ_SECONDS)
     else:
         log(f"{sid}: 没有弹出文章标签，直接等待 {READ_SECONDS}s")
         sb.sleep(READ_SECONDS)
-    close_extra_tabs(sb, main)  # 文章页和广告弹窗一起关掉
-    sb.sleep(2)
+    back_to_main(sb, main)
+    sb.sleep(3)
     kill_overlays(sb)
 
 
@@ -312,12 +331,18 @@ def renew(sb, url):
 
         for i in range(3):  # 广告可能吃掉 Read Article 的点击, 最多点 3 次
             read_article(sb, sid, main)
+            end = time.time() + 15
+            while time.time() < end and not sb.is_element_present(X_CLAIM, by="xpath"):
+                sb.sleep(1)
             if sb.is_element_present(X_CLAIM, by="xpath"):
                 break
-            sb.sleep(5)
-            if sb.is_element_present(X_CLAIM, by="xpath"):
-                break
-            log(f"{sid}: 第 {i + 1} 次阅读后没出现 Claim Renewal，重试")
+            try:
+                txt = sb.get_text("div[role='dialog'], .ReactModal__Content")[:160].replace("\n", " | ")
+            except Exception:
+                txt = "?"
+            log(f"{sid}: 第 {i + 1} 次阅读后没出现 Claim Renewal（弹窗：{txt}），重试")
+            sb.save_screenshot(f"fail_{sid}_read{i + 1}.png")
+            close_extra_tabs(sb, main)
         sb.wait_for_element(X_CLAIM, by="xpath", timeout=10)
 
         if not pass_turnstile(sb, X_CLAIM, detach=True):
@@ -345,7 +370,7 @@ def main():
 
     proxy_url, ip, mode = setup_network()
     log(f"网络模式：{mode}，出口 IP：{ip}")
-    kw = dict(uc=True, test=True, headless=False, locale_code="en", ad_block=True,
+    kw = dict(uc=True, test=True, headless=False, locale_code="en",
               xvfb=sys.platform.startswith("linux"))
     if proxy_url:
         kw["proxy"] = proxy_url.split("://", 1)[-1]  # SB 要 host:port
