@@ -314,6 +314,21 @@ def renewal_days(sb):
     return int(m.group(1)) if m else None
 
 
+def server_info(sb):
+    """从服务器页面读状态和运行时长（读不到就返回 None）。"""
+    try:
+        txt = sb.get_text("body")
+    except Exception:
+        return None, None
+    st = None
+    m = re.search(r"\b(Running|Offline|Starting|Stopping)\b", txt)
+    if m:
+        st = {"Running": "运行中", "Offline": "已关机", "Starting": "启动中",
+              "Stopping": "停止中"}[m.group(1)]
+    up = re.search(r"(\d+d\s*\d+h\s*\d+m|\d+h\s*\d+m\s*\d+s|\d+m\s*\d+s)", txt)
+    return st, (up.group(1) if up else None)
+
+
 def open_server(sb, url):
     sb.uc_open_with_reconnect(url, 3)
     end = time.time() + 40
@@ -403,7 +418,8 @@ def renew(sb, url):
         after = open_server(sb, url)
         log(f"{sid}: {before} 天 -> {after} 天")
         if before is not None and after is not None and after > before:
-            return True
+            st, up = server_info(sb)
+            return {"before": before, "after": after, "status": st, "uptime": up}
         raise RuntimeError("剩余天数没有增加")
     except Exception:
         try:
@@ -411,6 +427,79 @@ def renew(sb, url):
         except Exception:
             pass
         raise
+
+
+
+# ---------------------------------------------------------------- Telegram 推送
+
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "").strip()
+TG_CHAT_ID = os.getenv("TG_CHAT_ID", "").strip()
+SCHEDULE_TEXT = os.getenv("SCHEDULE_TEXT", "每 3 天 09:00（北京时间）")
+
+
+def mask_email(e):
+    if "@" not in e:
+        return (e[:1] + "***" + e[-1:]) if len(e) > 2 else "***"
+    u, d = e.split("@", 1)
+    return f"{u[:1]}***{u[-1:]}@{d}" if len(u) > 1 else f"{u}***@{d}"
+
+
+def build_report(mode, ip, results, login_error=None):
+    import html
+    esc = html.escape
+    bad = bool(login_error) or any(not r["ok"] for r in results)
+    ok_n = sum(1 for r in results if r["ok"])
+    head = "⚠️ <b>Orihost 运行报告（有异常）</b>" if bad else "✅ <b>Orihost 运行报告</b>"
+    node = {"代理": "🟢 已启用（代理）", "直连": "⚪ 未启用（直连）"}.get(mode, f"🔴 {esc(mode)}")
+    now = datetime.utcnow().timestamp() + 8 * 3600
+    lines = [head, "",
+             f"👤 账号：{esc(mask_email(EMAIL))}",
+             f"🌐 节点状态：{node}",
+             f"📍 出口IP：{esc(str(ip))}",
+             f"🕐 时间：{datetime.utcfromtimestamp(now):%Y/%m/%d %H:%M}"]
+    if login_error:
+        lines.append(f"❌ 登录失败：{esc(login_error[:200])}")
+    else:
+        lines.append(f"📊 共 {len(results)} 台：续期成功 {ok_n}，异常 {len(results) - ok_n}")
+    sep = "━━━━━━━━━━━━━━━"
+    for r in results:
+        lines += [sep, "", f"🖥 服务器 <code>#{esc(r['id'])}</code>"]
+        if r.get("status"):
+            lines.append(f"⚡ 状态：{r['status']}")
+        if r.get("uptime"):
+            lines.append(f"⏰ 运行时长：{esc(r['uptime'])}")
+        if r["ok"]:
+            lines += ["🎉 续期成功",
+                      f"📅 续期前：约 {r['before']} 天",
+                      f"✅ 续期后：约 {r['after']} 天"]
+        else:
+            lines += ["❌ 续期失败", f"⚠️ 原因：{esc(r.get('error') or '未知')[:200]}"]
+            if r.get("before") is not None:
+                lines.append(f"📅 剩余：约 {r['before']} 天")
+    lines += [sep, "", f"⏰ 自动检查：{SCHEDULE_TEXT}"]
+    return "\n".join(lines)
+
+
+def tg_send(text):
+    if not (TG_BOT_TOKEN and TG_CHAT_ID):
+        log("未设置 TG_BOT_TOKEN / TG_CHAT_ID，跳过推送")
+        return
+    import json
+    import urllib.request
+    data = json.dumps({"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML",
+                       "disable_web_page_preview": True}).encode()
+    req = urllib.request.Request(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
+                                 data=data, headers={"Content-Type": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 直连
+    for i in range(3):
+        try:
+            with opener.open(req, timeout=20) as resp:
+                if resp.status == 200:
+                    log("Telegram 推送成功")
+                    return
+        except Exception as e:
+            log(f"Telegram 推送失败（第 {i + 1} 次）：{str(e)[:120]}")
+            time.sleep(3)
 
 
 # ---------------------------------------------------------------- main
@@ -425,32 +514,58 @@ def main():
     if proxy_url:
         kw["proxy"] = proxy_url.split("://", 1)[-1]  # SB 要 host:port
 
-    ok, urls = 0, []
-    with SB(**kw) as sb:
-        try:
-            login(sb)
-        except Exception:
+    results, login_error = [], None
+    try:
+        with SB(**kw) as sb:
             try:
-                sb.save_screenshot("fail_login.png")
-            except Exception:
-                pass
-            raise
-        save_cookies(sb)  # 登录成功立即导出，续期失败也不影响 cookie 更新
-
-        urls = server_urls(sb)
-        log(f"找到 {len(urls)} 台服务器")
-        for u in urls:
-            for attempt in range(1, 3):  # 每台最多 2 次
+                login(sb)
+            except Exception as e:
+                login_error = str(e).splitlines()[0] if str(e) else type(e).__name__
                 try:
-                    if renew(sb, u):
-                        ok += 1
-                        break
-                except Exception as e:
-                    log(f"{u} 第 {attempt} 次续期失败：{str(e).splitlines()[0][:300]}")
-        save_cookies(sb)
+                    sb.save_screenshot("fail_login.png")
+                except Exception:
+                    pass
+                raise
+            save_cookies(sb)  # 登录成功立即导出，续期失败也不影响 cookie 更新
 
-    log(f"完成：{ok}/{len(urls)} 台成功续期")
-    sys.exit(0 if ok or not urls else 1)
+            urls = server_urls(sb)
+            log(f"找到 {len(urls)} 台服务器")
+            for u in urls:
+                sid = u.rsplit("/", 1)[-1]
+                rec = {"id": sid, "ok": False, "error": None, "before": None}
+                for attempt in range(1, 3):  # 每台最多 2 次
+                    try:
+                        info = renew(sb, u)
+                        rec.update(info, ok=True)
+                        break
+                    except Exception as e:
+                        msg = str(e).splitlines()[0][:300] if str(e).strip() else "页面元素未出现"
+                        if msg.startswith("Message:"):
+                            msg = "页面元素未出现（Claim Renewal / 按钮）"
+                        rec["error"] = msg
+                        log(f"{u} 第 {attempt} 次续期失败：{msg}")
+                if not rec["ok"]:
+                    try:
+                        rec["before"] = renewal_days(sb)
+                        rec["status"], rec["uptime"] = server_info(sb)
+                    except Exception:
+                        pass
+                results.append(rec)
+            save_cookies(sb)
+    except Exception as e:
+        if not login_error:
+            login_error = None
+            results.append({"id": "-", "ok": False, "error": f"脚本异常：{str(e).splitlines()[0][:150]}"})
+        log("运行异常：", e)
+    finally:
+        try:
+            tg_send(build_report(mode, ip, results, login_error))
+        except Exception as e:
+            log("生成/发送报告失败：", e)
+
+    ok = sum(1 for r in results if r["ok"])
+    log(f"完成：{ok}/{len(results)} 台成功续期")
+    sys.exit(1 if login_error or any(not r["ok"] for r in results) else 0)
 
 
 if __name__ == "__main__":
