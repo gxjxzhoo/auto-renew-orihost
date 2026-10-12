@@ -52,6 +52,8 @@ jobs:
           ORIHOST_PASSWORD: ${{ secrets.ORIHOST_PASSWORD }}
           ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
           NODE_LINK: ${{ secrets.NODE_LINK }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
         run: |
           set -o pipefail
