@@ -326,6 +326,7 @@ fetch(path, {method, headers: h, credentials: "same-origin", body: body ? JSON.s
   .catch(e => done({status: 0, text: String(e)}));
 """
 STATE_CN = {"running": "运行中", "offline": "已关机", "starting": "启动中", "stopping": "停止中"}
+AUTO_START_SKIP = {x.strip() for x in os.getenv("AUTO_START_SKIP", "").split(",") if x.strip()}
 AUTO_START = os.getenv("AUTO_START", "1").strip().lower() not in ("0", "false", "no", "")
 
 
@@ -377,7 +378,7 @@ def server_info(sb, sid=None):
 def ensure_running(sb, sid, rec):
     """关机就发开机信号，记录到报告。"""
     st, _ = api_state(sb, sid)
-    if st != "offline" or not AUTO_START:
+    if st != "offline" or not AUTO_START or sid in AUTO_START_SKIP:
         return
     r = panel_api(sb, "POST", f"/api/client/servers/{sid}/power", {"signal": "start"})
     if r and r.get("status") in (200, 204):
