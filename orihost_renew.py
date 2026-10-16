@@ -179,6 +179,8 @@ def inject_cookie(sb):
     for part in COOKIE.split(";"):
         if "=" in part:
             k, v = part.strip().split("=", 1)
+            if k.upper() == "XSRF-TOKEN":  # 旧 XSRF 会和面板新下发的重复 -> CSRF token mismatch, 让面板自己重新下发
+                continue
             try:
                 sb.driver.add_cookie({"name": k, "value": v, "domain": "panel.orihost.com",
                                       "path": "/", "secure": True})
@@ -503,6 +505,8 @@ def renew(sb, url):
                 txt = sb.get_text("div[role='dialog'], .ReactModal__Content")[:160].replace("\n", " | ")
             except Exception:
                 txt = "?"
+            if "CSRF token mismatch" in txt:
+                raise RuntimeError("CSRF token mismatch")
             log(f"{sid}: 第 {i + 1} 次阅读后没出现 Claim Renewal（弹窗：{txt}），重试")
             sb.save_screenshot(f"fail_{sid}_read{i + 1}.png")
             close_extra_tabs(sb, main)
@@ -657,6 +661,13 @@ def main():
                             msg = "页面元素未出现（Claim Renewal / 按钮）"
                         rec["error"] = msg
                         log(f"{u} 第 {attempt} 次续期失败：{msg}")
+                        if "CSRF" in msg:  # 会话 token 不一致 -> 清 cookie 用账号密码重新登录
+                            log("CSRF 不一致，清除 cookie 后重新登录")
+                            global COOKIE
+                            COOKIE = ""
+                            sb.driver.delete_all_cookies()
+                            login(sb)
+                            save_cookies(sb)
                 if not rec["ok"]:
                     try:
                         rec["before"] = renewal_days(sb)
