@@ -1,0 +1,28 @@
+节点已整理为固定格式：vless://****@ubuntu.com.cn:443?security=tls&sni=ulzixus.gxjx.eu.cc&fp=firefox&type=ws&path=/vless-argo?ed=2560
+NODE_LINK 协议：vless，用 sing-box 转本地代理
+使用缓存的 sing-box：/home/runner/sing-box-bin/sing-box
+本地代理已就绪：http://127.0.0.1:37115
+代理自检通过，出口 IP：186.244.*.*
+[2026-10-16 06:57:35] 网络模式：代理，出口 IP：186.244.*.*
+======================= {orihost_renew.py:700:SB} starts =======================
+[2026-10-16 06:57:53] 已注入 10 个 cookie
+[2026-10-16 06:58:00] Cookie 登录成功
+[2026-10-16 06:58:00] 已导出 11 个 cookie
+[2026-10-16 06:58:03] 找到 2 台服务器
+[2026-10-16 06:58:09] 已关闭 Cookie 同意弹窗
+[2026-10-16 06:58:10] 已移除 1 个广告遮罩
+[2026-10-16 06:58:39] 44c0d5ef: 文章页 https://albeu.com/english/flyesim-me-launches-partner-program-to-make-global-esi
+[2026-10-16 06:59:37] Turnstile 容器 [490, 295, 300, 71]，点击屏幕坐标 (540, 472)
+[2026-10-16 06:59:44] Turnstile 已通过（点击 1 次）
+[2026-10-16 06:59:52] 44c0d5ef: 17 天 -> 21 天
+[2026-10-16 06:59:58] 已移除 1 个广告遮罩
+[2026-10-16 07:00:21] https://panel.orihost.com/server/b82d0a04 第 1 次续期失败：页面元素未出现（Claim Renewal / 按钮）
+[2026-10-16 07:00:26] 已移除 1 个广告遮罩
+[2026-10-16 07:00:48] b82d0a04: 文章页 https://albeu.com/english/flyesim-me-launches-partner-program-to-make-global-esi
+[2026-10-16 07:01:46] Turnstile 容器 [490, 295, 300, 71]，点击屏幕坐标 (540, 472)
+[2026-10-16 07:01:53] Turnstile 已通过（点击 1 次）
+[2026-10-16 07:02:01] b82d0a04: 17 天 -> 21 天
+[2026-10-16 07:02:02] 已导出 11 个 cookie
+================= {orihost_renew.py:700:SB} passed in 266.73s ==================
+[2026-10-16 07:02:02] Telegram 推送成功
+[2026-10-16 07:02:02] 完成：2/2 台成功续期
