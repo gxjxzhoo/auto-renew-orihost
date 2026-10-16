@@ -258,8 +258,35 @@ return n;
 """
 
 
+COOKIE_JS = r"""
+var hit=null;
+document.querySelectorAll('div,section,aside').forEach(function(e){
+  if(!hit && /We use cookies/i.test(e.innerText||'') && e.querySelector('button')) hit=e;
+});
+if(!hit) return 0;
+var el=hit; while(el.parentElement && /We use cookies/i.test(el.parentElement.innerText||'') && el.parentElement.innerText.length<1500) el=el.parentElement;
+var btns=[].slice.call(el.querySelectorAll('button,a'));
+var b=btns.find(function(x){return /accept|agree|got it|understand|allow|continue|^ok/i.test((x.innerText||'').trim());})||btns[btns.length-1];
+if(b){b.click();return 1;}
+el.remove();return 2;
+"""
+
+
+def dismiss_cookie(sb):
+    """面板新增的 Cookie 同意弹窗会挡住续期弹窗 -> 点同意（找不到按钮就移除）。"""
+    try:
+        r = sb.execute_script(COOKIE_JS) or 0
+        if r:
+            log("已关闭 Cookie 同意弹窗")
+            sb.sleep(1)
+        return r
+    except Exception:
+        return 0
+
+
 def kill_overlays(sb):
     """移除广告插页（全屏 fixed、z-index 最大的 iframe/div），保留 Turnstile。"""
+    dismiss_cookie(sb)
     try:
         n = sb.execute_script(KILL_OVERLAY_JS) or 0
         if n:
@@ -467,6 +494,9 @@ def renew(sb, url):
             end = time.time() + 15
             while time.time() < end and not sb.is_element_present(X_CLAIM, by="xpath"):
                 sb.sleep(1)
+            if sb.is_element_present(X_CLAIM, by="xpath"):
+                break
+            dismiss_cookie(sb)
             if sb.is_element_present(X_CLAIM, by="xpath"):
                 break
             try:
