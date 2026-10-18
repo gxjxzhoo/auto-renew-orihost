@@ -49,6 +49,10 @@ def log(*a):
 
 def setup_network():
     """返回 (本地代理URL或None, 脱敏出口IP, 模式)。代理失败回落直连。"""
+    ext = os.getenv("NODE_PROXY_URL", "").strip()
+    if ext:  # 前一步 gxjxzhoo/Node_Proxy Action 已起好代理
+        log("使用 Node_Proxy Action 提供的本地代理")
+        return ext, os.getenv("NODE_PROXY_IP", "") or "未知", "代理"
     if NODE_LINK.strip():
         try:
             proxy, ip, _ = setup_node_proxy(NODE_LINK, workdir=os.getenv("RUNNER_TEMP", "/tmp"))
