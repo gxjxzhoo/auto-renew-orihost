@@ -39,6 +39,13 @@ jobs:
           fi
           rm -rf .shared-env
 
+      - name: 启动代理（Node_Proxy）
+        id: proxy
+        continue-on-error: true
+        uses: gxjxzhoo/Node_Proxy@main
+        with:
+          node-link: ${{ env.NODE_LINK || secrets.NODE_LINK }}
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -77,6 +84,7 @@ jobs:
           TG_BOT_TOKEN: ${{ env.TG_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ env.TG_CHAT_ID || secrets.TG_CHAT_ID }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
+          NODE_PROXY_IP: ${{ steps.proxy.outputs.exit-ip }}
         run: |
           set -o pipefail
           python orihost_renew.py 2>&1 | tee raw.log
