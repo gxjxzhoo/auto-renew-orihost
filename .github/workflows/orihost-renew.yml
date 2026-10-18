@@ -52,6 +52,7 @@ jobs:
           cache: pip
 
       - name: 缓存 sing-box
+        if: env.NODE_PROXY_URL == ''
         id: sb-cache
         uses: actions/cache@v4
         with:
@@ -59,7 +60,7 @@ jobs:
           key: sing-box-${{ env.SING_BOX_VERSION }}
 
       - name: 下载 sing-box
-        if: steps.sb-cache.outputs.cache-hit != 'true'
+        if: env.NODE_PROXY_URL == '' && steps.sb-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/sing-box-bin
           curl -fsSL --retry 3 -o /tmp/sb.tgz \
