@@ -17,6 +17,27 @@ jobs:
       actions: write    # 清理旧运行记录
     steps:
       - uses: actions/checkout@v4
+      - name: Load shared env (env-config)
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: gxjxzhoo/env-config
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: .shared-env
+      - name: Apply shared env
+        shell: bash
+        run: |
+          f=.shared-env/.env
+          if [ -f "$f" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+              case "$line" in ''|\#*) continue ;; esac
+              key="${line%%=*}"; value="${line#*=}"
+              [ -z "$value" ] && continue
+              echo "::add-mask::$value"
+              echo "$key=$value" >> "$GITHUB_ENV"
+            done < "$f"
+          fi
+          rm -rf .shared-env
 
       - uses: actions/setup-python@v5
         with:
@@ -52,9 +73,9 @@ jobs:
           ORIHOST_EMAIL: ${{ secrets.ORIHOST_EMAIL }}
           ORIHOST_PASSWORD: ${{ secrets.ORIHOST_PASSWORD }}
           ORIHOST_COOKIE: ${{ secrets.ORIHOST_COOKIE }}
-          NODE_LINK: ${{ secrets.NODE_LINK }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          NODE_LINK: ${{ env.NODE_LINK || secrets.NODE_LINK }}
+          TG_BOT_TOKEN: ${{ env.TG_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ env.TG_CHAT_ID || secrets.TG_CHAT_ID }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
         run: |
           set -o pipefail
