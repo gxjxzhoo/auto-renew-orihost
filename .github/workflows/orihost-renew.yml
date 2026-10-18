@@ -42,7 +42,7 @@ jobs:
       - name: 启动代理（Node_Proxy）
         id: proxy
         continue-on-error: true
-        uses: gxjxzhoo/Node_Proxy@main
+        uses: gxjxzhoo/Node_Proxy@v1
         with:
           node-link: ${{ env.NODE_LINK || secrets.NODE_LINK }}
 
