@@ -16,9 +16,9 @@ jobs:
       contents: write   # 保活空提交用
       actions: write    # 清理旧运行记录
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: 加载共享变量（env-config）
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         continue-on-error: true
         with:
           repository: gxjxzhoo/env-config
@@ -51,7 +51,7 @@ jobs:
         with:
           node-link: ${{ env.NODE_LINK || secrets.NODE_LINK }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -59,7 +59,7 @@ jobs:
       - name: 缓存 sing-box
         if: env.NODE_PROXY_URL == ''
         id: sb-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/sing-box-bin
           key: sing-box-${{ env.SING_BOX_VERSION }}
@@ -119,7 +119,7 @@ jobs:
 
       - name: 失败截图
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: renew-fail
           path: fail_*.png
