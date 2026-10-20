@@ -17,14 +17,16 @@ jobs:
       actions: write    # 清理旧运行记录
     steps:
       - uses: actions/checkout@v4
-      - name: Load shared env (env-config)
+      - name: 加载共享变量（env-config）
         uses: actions/checkout@v4
         continue-on-error: true
         with:
           repository: gxjxzhoo/env-config
           token: ${{ secrets.PRIVATE_REPO_TOKEN }}
           path: .shared-env
-      - name: Apply shared env
+          persist-credentials: false
+
+      - name: 应用共享变量
         shell: bash
         run: |
           f=.shared-env/.env
@@ -36,11 +38,14 @@ jobs:
               echo "::add-mask::$value"
               echo "$key=$value" >> "$GITHUB_ENV"
             done < "$f"
+            echo "✅ 已加载 env-config"
+          else
+            echo "⚠️ 未读到 env-config（检查 PRIVATE_REPO_TOKEN），使用仓库 Secrets"
           fi
           rm -rf .shared-env
 
       - name: 启动代理（Node_Proxy）
-        id: proxy
+        id: nodeproxy
         continue-on-error: true
         uses: gxjxzhoo/Node_Proxy@v1
         with:
@@ -85,7 +90,7 @@ jobs:
           TG_BOT_TOKEN: ${{ env.TG_BOT_TOKEN || secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ env.TG_CHAT_ID || secrets.TG_CHAT_ID }}
           SING_BOX_BIN: ~/sing-box-bin/sing-box
-          NODE_PROXY_IP: ${{ steps.proxy.outputs.exit-ip }}
+          NODE_PROXY_IP: ${{ steps.nodeproxy.outputs.exit-ip }}
         run: |
           set -o pipefail
           python orihost_renew.py 2>&1 | tee raw.log
@@ -99,16 +104,6 @@ jobs:
           if [ ! -s cookie.txt ]; then echo "没有导出的 cookie，跳过"; exit 0; fi
           gh secret set ORIHOST_COOKIE --repo "$GITHUB_REPOSITORY" < cookie.txt && echo "ORIHOST_COOKIE 已更新"
           rm -f cookie.txt
-
-      - name: 保活（超过 45 天无提交补空提交）
-        if: always()
-        run: |
-          last=$(git log -1 --format=%ct); now=$(date +%s)
-          if [ $(( (now - last) / 86400 )) -ge 45 ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git commit --allow-empty -m "chore: keepalive" && git push || true
-          fi
 
       - name: 日志推到 run-logs 分支（方便远程排查）
         if: always()
@@ -130,15 +125,27 @@ jobs:
           path: fail_*.png
           if-no-files-found: ignore
 
-      - name: 清理旧运行记录（保留最近 10 条）
+      - name: 保活（刷新工作流启用状态，防 60 天无活动被停用）
         if: always()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          KEEP: 10
         run: |
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+          wf=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
+          gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/enable" \
+            && echo "✅ 已刷新工作流启用状态" || echo "⚠️ 保活失败（不影响主任务）"
+
+      - name: 清理旧运行记录（保留最近 10 条）
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: "10"
+        run: |
+          wf=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.status == "completed") | .id' \
-            | grep -v "^${GITHUB_RUN_ID}$" | tail -n +"$KEEP" \
+            | grep -vx "$GITHUB_RUN_ID" | tail -n +"$KEEP" \
             | while read -r id; do
-                gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" >/dev/null && echo "已删除运行 ${id}"
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" >/dev/null && echo "已删除运行 $id"
               done || true
