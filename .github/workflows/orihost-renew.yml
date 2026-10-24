@@ -2,14 +2,55 @@ name: Orihost 自动续期
 
 on:
   schedule:
-    - cron: "0 1 */3 * *"   # 每 3 天 UTC 01:00 = 北京时间 09:00
+    - cron: "7 1 */3 * *"   # 每 3 天 09:07 CST（避开整点高峰）
+    # 备用：同一天 15:37 CST 补跑（当天已成功则自动跳过）
+    - cron: "37 7 */3 * *"
   workflow_dispatch:
 
 env:
   SING_BOX_VERSION: "1.14.1"
 
+# 主/备用定时与手动运行不并发，排队执行
+concurrency:
+  group: auto-renew-orihost
+  cancel-in-progress: false
+
 jobs:
+  guard:
+    # 定时触发时：今天（北京时间）已有成功运行就跳过，避免主/备用定时重复执行；手动触发总是执行
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.chk.outputs.run }}
+    steps:
+      - id: chk
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB: renew
+          EVENT: ${{ github.event_name }}
+          SCHED: ${{ github.event.schedule }}
+        run: |
+          if [ "$EVENT" != "schedule" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          today=$(TZ=Asia/Shanghai date +%F)
+          since=$(date -u -d "@$(TZ=Asia/Shanghai date -d "$today 00:00" +%s)" +%FT%TZ)
+          wf=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
+          ids=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf/runs?status=completed&created=%3E%3D$since&per_page=50" \
+            --jq ".workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .id" || true)
+          for id in $ids; do
+            if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
+                 --jq ".jobs[] | select(.name == \"$JOB\" and .conclusion == \"success\") | .id" | grep -q .; then
+              echo "⏭️ 今天（$today CST）已有成功运行 $id，本次定时跳过"
+              echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          echo "▶️ 今天还没有成功运行，继续执行"
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
   renew:
+    needs: guard
+    if: needs.guard.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
