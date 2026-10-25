@@ -476,6 +476,46 @@ def read_article(sb, sid, main):
     kill_overlays(sb)
 
 
+API_RENEW = os.getenv("API_RENEW", "1").strip().lower() not in ("0", "false", "no", "")
+
+
+def api_renew(sb, sid, url, before):
+    """接口续期（参考 JJJuines/orihost-renew）：renew/begin -> 等 dwell_seconds -> renewal/complete。
+    成功返回续期后的天数；任何异常/未生效返回 None，交给页面点击流程兜底。"""
+    try:
+        r = panel_api(sb, "POST", f"/api/client/servers/{sid}/renew/begin")
+        st = r.get("status") if r else None
+        if st != 200:
+            log(f"{sid}: 接口续期 begin 返回 {st}：{(r or {}).get('text', '')[:120]}，改用页面流程")
+            if st == 419:
+                raise RuntimeError("CSRF token mismatch")
+            return None
+        try:
+            dwell = int(json.loads(r["text"]).get("dwell_seconds") or 15)
+        except Exception:
+            dwell = 15
+        log(f"{sid}: 接口续期已开始，等待 {dwell + 2}s")
+        time.sleep(min(dwell, 120) + 2)
+        r2 = panel_api(sb, "GET", "/api/client/renewal/complete")
+        try:
+            d = json.loads(r2.get("text") or "{}")
+        except Exception:
+            d = {}
+        log(f"{sid}: complete 返回 {r2.get('status') if r2 else None}，renewed={d.get('renewed_count')} skipped={d.get('skipped_count')}")
+        if not (r2 and r2.get("status") == 200 and (d.get("renewed_count") or 0) > 0):
+            return None
+        after = open_server(sb, url)
+        log(f"{sid}: {before} 天 -> {after} 天（接口）")
+        if after is not None and (before is None or after > before or after >= MAX_DAYS):
+            return after
+        return None
+    except RuntimeError:
+        raise
+    except Exception as e:
+        log(f"{sid}: 接口续期异常 {type(e).__name__}，改用页面流程")
+        return None
+
+
 def renew(sb, url):
     sid = url.rsplit("/", 1)[-1]
     try:
@@ -491,6 +531,14 @@ def renew(sb, url):
             log(f"{sid}: 剩余 {before} 天，已达上限，跳过")
             st, up = server_info(sb, sid)
             return {"before": before, "after": before, "status": st, "uptime": up, "skipped": True}
+        if API_RENEW:
+            after = api_renew(sb, sid, url, before)
+            if after is not None:
+                st, up = server_info(sb, sid)
+                return {"before": before, "after": after, "status": st, "uptime": up, "via": "api"}
+            open_server(sb, url)
+            sb.sleep(2)
+            kill_overlays(sb)
         safe_click(sb, X_RENEW)
         sb.sleep(2)
         close_extra_tabs(sb, main)
