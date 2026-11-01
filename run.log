@@ -1,0 +1,17 @@
+[2026-11-01 23:16:11] 使用 Node_Proxy Action 提供的本地代理
+[2026-11-01 23:16:11] 网络模式：代理，出口 IP：23.156.*.*
+======================= {orihost_renew.py:752:SB} starts =======================
+[2026-11-01 23:16:29] 已注入 10 个 cookie
+[2026-11-01 23:16:36] Cookie 已失效，改用账号密码登录
+[2026-11-01 23:17:10] Turnstile 已通过（点击 1 次）
+Traceback (most recent call last):
+  File "/opt/hostedtoolcache/Python/3.11.17/x64/lib/python3.11/site-packages/seleniumbase/plugins/sb_manager.py", line 1410, in SB
+    yield sb
+  File "/home/runner/work/auto-renew-orihost/auto-renew-orihost/orihost_renew.py", line 690, in main
+    login(sb)
+  File "/home/runner/work/auto-renew-orihost/auto-renew-orihost/orihost_renew.py", line 248, in login
+    raise RuntimeError("账号密码登录失败（仍停在 /auth）")
+RuntimeError: 账号密码登录失败（仍停在 /auth）
+================== {orihost_renew.py:752:SB} failed in 99.27s ==================
+[2026-11-01 23:17:51] Telegram 推送成功
+[2026-11-01 23:17:51] 完成：0/0 台成功续期
